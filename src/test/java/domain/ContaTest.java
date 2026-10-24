@@ -1,15 +1,23 @@
 package domain;
 
+import java.lang.management.ManagementFactory;
+import java.lang.management.MonitorInfo;
+import java.lang.management.ThreadInfo;
 import java.math.BigDecimal;
+import java.time.Duration;
+import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
- * Testes unitários da raiz de agregado {@link Conta} (Semana 1: domínio sequencial).
+ * Testes unitários da raiz de agregado {@link Conta}.
  */
 class ContaTest {
 
@@ -24,6 +32,8 @@ class ContaTest {
         assertEquals(0, new BigDecimal(esperado).compareTo(conta.consultarSaldo()),
                 "Saldo esperado " + esperado + " mas foi " + conta.consultarSaldo());
     }
+
+    // ---------- criação ----------
 
     @Test
     void contaRejeitaSaldoInicialNegativo() {
@@ -221,5 +231,43 @@ class ContaTest {
         assertSaldo("100.00", origem);
         assertSaldo("50.00", destino);
     }
-}
 
+    // ---------- ordem de bloqueio (determinístico) ----------
+
+    @Test
+    void transferirPara_BloqueiaPrimeiroAContaDeMenorNumero() throws Exception {
+        Conta menor = contaComSaldo(1L, "100.00");
+        Conta maior = new Conta(2L, outroTitular, new BigDecimal("100.00"));
+        Thread transferencia = new Thread(
+                () -> maior.transferirPara(menor, new BigDecimal("1.00")), "transferencia-maior-para-menor");
+        transferencia.setDaemon(true);
+
+        // Este teste segura o monitor da conta de MAIOR número. Quem transfere a partir dela
+        // só consegue avançar até o ponto em que precisa desse monitor.
+        synchronized (maior) {
+            transferencia.start();
+            long limite = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+            while (transferencia.getState() != Thread.State.BLOCKED) {
+                if (System.nanoTime() > limite) {
+                    fail("A thread de transferência não chegou a ficar bloqueada.");
+                }
+                Thread.yield();
+            }
+
+            ThreadInfo info = ManagementFactory.getThreadMXBean()
+                    .getThreadInfo(new long[] {transferencia.threadId()}, true, false)[0];
+            boolean seguraAContaMenor = Arrays.stream(info.getLockedMonitors())
+                    .map(MonitorInfo::getIdentityHashCode)
+                    .anyMatch(hash -> hash == System.identityHashCode(menor));
+
+            assertTrue(seguraAContaMenor,
+                    "A transferência deve já ter bloqueado a conta de menor número enquanto"
+                            + " espera a de maior número.");
+        }
+
+        transferencia.join(5_000);
+        assertFalse(transferencia.isAlive(), "A transferência deve terminar quando o monitor é liberado.");
+        assertSaldo("99.00", maior);
+        assertSaldo("101.00", menor);
+    }
+}

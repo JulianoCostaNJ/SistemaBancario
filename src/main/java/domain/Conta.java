@@ -10,12 +10,16 @@ import java.math.RoundingMode;
  * {@link BigDecimal} com duas casas decimais: valores com mais casas são rejeitados, nunca
  * arredondados em silêncio. Uma operação rejeitada não altera nenhum saldo.</p>
  *
- * <p>Nesta versão os métodos não são sincronizados. A proteção contra acesso concorrente será
- * acrescentada junto com os testes concorrentes que a justificam.</p>
+ * <p>{@link #consultarSaldo()}, {@link #depositar(BigDecimal)} e {@link #sacar(BigDecimal)} são
+ * {@code synchronized} e usam o monitor da própria conta: a validação do saldo e a sua alteração
+ * ocorrem na mesma região crítica. {@link #transferirPara(Conta, BigDecimal)} bloqueia as duas
+ * contas sempre em ordem crescente de número, o que impede deadlock entre transferências em
+ * sentidos opostos.</p>
  */
 public final class Conta {
 
     private static final int ESCALA = 2;
+
     private final long numero;
     private final Cliente titular;
     private BigDecimal saldo;
@@ -25,8 +29,9 @@ public final class Conta {
      *
      * @param numero número único e imutável da conta
      * @param titular titular da conta
-     * @param saldoInicial saldo inicial, que não pode ser negativo
-     * @throws IllegalArgumentException se o saldo inicial for negativo
+     * @param saldoInicial saldo inicial, não negativo e com no máximo duas casas decimais
+     * @throws IllegalArgumentException se o titular ou o saldo forem nulos, se o saldo for
+     *         negativo ou se tiver mais de duas casas decimais
      */
     public Conta(long numero, Cliente titular, BigDecimal saldoInicial) {
         if (titular == null) {
@@ -61,13 +66,13 @@ public final class Conta {
     public Cliente getTitular() {
         return titular;
     }
-    
+
     /**
      * Consulta o saldo atual.
      *
      * @return saldo com duas casas decimais
      */
-    public BigDecimal consultarSaldo() {
+    public synchronized BigDecimal consultarSaldo() {
         return saldo;
     }
 
@@ -78,7 +83,7 @@ public final class Conta {
      * @throws IllegalArgumentException se o valor for nulo, zero, negativo ou tiver mais de
      *         duas casas decimais
      */
-    public void depositar(BigDecimal valor) {
+    public synchronized void depositar(BigDecimal valor) {
         BigDecimal valorValido = validarValorDaOperacao(valor);
         saldo = saldo.add(valorValido);
     }
@@ -91,7 +96,7 @@ public final class Conta {
      *         duas casas decimais
      * @throws SaldoInsuficienteException se o saldo for menor que o valor; o saldo não é alterado
      */
-    public void sacar(BigDecimal valor) {
+    public synchronized void sacar(BigDecimal valor) {
         BigDecimal valorValido = validarValorDaOperacao(valor);
         exigirSaldoSuficiente(valorValido);
         saldo = saldo.subtract(valorValido);
@@ -100,8 +105,11 @@ public final class Conta {
     /**
      * Transfere um valor desta conta para a conta de destino.
      *
-     * <p>Toda a validação ocorre antes de qualquer alteração, de modo que uma transferência
-     * recusada não modifica nenhuma das contas.</p>
+     * <p>Os monitores das duas contas são adquiridos sempre na mesma ordem global: primeiro o da
+     * conta de menor número e depois o da de maior número. Com os dois bloqueios, o saldo da origem
+     * é verificado e os dois saldos são alterados de forma indivisível para as demais operações.
+     * Uma transferência recusada não modifica nenhuma das contas. O método não é declarado
+     * {@code synchronized} de propósito: isso bloquearia a origem antes da ordenação.</p>
      *
      * @param destino conta que receberá o valor, diferente desta conta
      * @param valor valor positivo, com no máximo duas casas decimais
@@ -118,9 +126,16 @@ public final class Conta {
                     "Não é possível transferir para a mesma conta.");
         }
         BigDecimal valorValido = validarValorDaOperacao(valor);
-        exigirSaldoSuficiente(valorValido);
-        this.saldo = this.saldo.subtract(valorValido);
-        destino.saldo = destino.saldo.add(valorValido);
+
+        Conta menor = this.numero < destino.numero ? this : destino;
+        Conta maior = menor == this ? destino : this;
+        synchronized (menor) {
+            synchronized (maior) {
+                exigirSaldoSuficiente(valorValido);
+                this.saldo = this.saldo.subtract(valorValido);
+                destino.saldo = destino.saldo.add(valorValido);
+            }
+        }
     }
 
     private static BigDecimal validarValorDaOperacao(BigDecimal valor) {
@@ -149,4 +164,3 @@ public final class Conta {
         }
     }
 }
-
