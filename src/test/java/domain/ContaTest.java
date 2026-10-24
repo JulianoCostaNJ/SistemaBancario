@@ -251,7 +251,7 @@ class ContaTest {
                 if (System.nanoTime() > limite) {
                     fail("A thread de transferência não chegou a ficar bloqueada.");
                 }
-                Thread.yield();
+                Thread.onSpinWait();
             }
 
             ThreadInfo info = ManagementFactory.getThreadMXBean()
