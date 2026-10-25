@@ -9,7 +9,7 @@
 CREATE TABLE IF NOT EXISTS clientes (
     id        INTEGER PRIMARY KEY,
     nome      TEXT NOT NULL,
-    documento TEXT NOT NULL
+    documento TEXT NOT NULL UNIQUE
 );
 
 CREATE TABLE IF NOT EXISTS contas (

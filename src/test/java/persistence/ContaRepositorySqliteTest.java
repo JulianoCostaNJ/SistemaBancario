@@ -1,12 +1,5 @@
 package persistence;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-
-import domain.Cliente;
-import domain.Conta;
 import java.math.BigDecimal;
 import java.nio.file.Path;
 import java.sql.Connection;
@@ -16,13 +9,23 @@ import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+
+import domain.Cliente;
+import domain.Conta;
 
 /**
  * Testes de {@link ContaRepositorySqlite} contra um banco SQLite em arquivo temporário e isolado.
@@ -65,11 +68,19 @@ class ContaRepositorySqliteTest {
         }
     }
 
-    // ---------- salvar e recuperar ----------
+    private static ExecutorService criarPool() {
+        return Executors.newFixedThreadPool(8, tarefa -> {
+            Thread thread = new Thread(tarefa);
+            thread.setDaemon(true);
+            return thread;
+        });
+    }
+
+    // ---------- inserir e recuperar ----------
 
     @Test
-    void contaSalvaEhRecuperadaComTitularENumeroESaldo() {
-        repositorio.salvar(conta(10L, ana, "250.75"));
+    void contaInseridaEhRecuperadaComTitularENumeroESaldo() {
+        repositorio.inserir(conta(10L, ana, "250.75"));
 
         Optional<Conta> recuperada = repositorio.buscarPorNumero(10L);
 
@@ -84,7 +95,7 @@ class ContaRepositorySqliteTest {
 
     @Test
     void saldoGrandeEhPreservadoSemPerdaDePrecisao() {
-        repositorio.salvar(conta(10L, ana, "12345678901234567.89"));
+        repositorio.inserir(conta(10L, ana, "12345678901234567.89"));
 
         Conta recuperada = repositorio.buscarPorNumero(10L).orElseThrow();
 
@@ -93,7 +104,7 @@ class ContaRepositorySqliteTest {
 
     @Test
     void saldoEhGravadoComoTextoEExatoNoBanco() throws Exception {
-        repositorio.salvar(conta(10L, ana, "0.10"));
+        repositorio.inserir(conta(10L, ana, "0.10"));
 
         try (Connection conexao = fabrica.criarConexao();
              Statement comando = conexao.createStatement();
@@ -110,29 +121,54 @@ class ContaRepositorySqliteTest {
         assertFalse(repositorio.buscarPorNumero(999L).isPresent());
     }
 
-    // ---------- atualizar ----------
+    // ---------- duplicidade ----------
 
     @Test
-    void salvarContaExistenteAtualizaOSaldoSemDuplicar() {
-        Conta conta = conta(10L, ana, "100.00");
-        repositorio.salvar(conta);
-        conta.depositar(new BigDecimal("50.25"));
+    void inserirContaComNumeroExistenteEhRecusadoEPreservaAContaOriginal() throws Exception {
+        repositorio.inserir(conta(10L, ana, "100.00"));
 
-        repositorio.salvar(conta);
+        assertThrows(PersistenciaException.class,
+                () -> repositorio.inserir(conta(10L, bruno, "5.00")));
 
-        assertEquals(1, repositorio.listarTodas().size());
-        assertEquals(0, new BigDecimal("150.25")
-                .compareTo(repositorio.buscarPorNumero(10L).orElseThrow().consultarSaldo()));
+        Conta original = repositorio.buscarPorNumero(10L).orElseThrow();
+        assertEquals("Ana Souza", original.getTitular().getNome());
+        assertEquals(0, new BigDecimal("100.00").compareTo(original.consultarSaldo()));
+        assertEquals(1, contar("clientes"), "O titular rejeitado não pode ficar gravado.");
     }
 
     @Test
     void duasContasDoMesmoTitularCompartilhamUmUnicoCliente() throws Exception {
-        repositorio.salvar(conta(10L, ana, "100.00"));
-        repositorio.salvar(conta(11L, ana, "200.00"));
+        repositorio.inserir(conta(10L, ana, "100.00"));
+        repositorio.inserir(conta(11L, ana, "200.00"));
 
         assertEquals(1, contar("clientes"));
         assertEquals(2, contar("contas"));
         assertEquals(1L, repositorio.buscarPorNumero(11L).orElseThrow().getTitular().getId());
+    }
+
+    @Test
+    void titularComMesmoIdEDadosDiferentesEhRecusado() throws Exception {
+        repositorio.inserir(conta(10L, ana, "100.00"));
+        Cliente outraPessoaComOMesmoId = new Cliente(1L, "Outra Pessoa", "000.000.000-00");
+
+        assertThrows(PersistenciaException.class,
+                () -> repositorio.inserir(conta(11L, outraPessoaComOMesmoId, "1.00")));
+
+        assertFalse(repositorio.buscarPorNumero(11L).isPresent());
+        assertEquals("Ana Souza",
+                repositorio.buscarPorNumero(10L).orElseThrow().getTitular().getNome());
+    }
+
+    @Test
+    void titularComMesmoDocumentoEOutroIdEhRecusado() throws Exception {
+        repositorio.inserir(conta(10L, ana, "100.00"));
+        Cliente mesmoDocumento = new Cliente(7L, "Ana Duplicada", ana.getDocumento());
+
+        assertThrows(PersistenciaException.class,
+                () -> repositorio.inserir(conta(11L, mesmoDocumento, "1.00")));
+
+        assertEquals(1, contar("clientes"));
+        assertEquals(1, contar("contas"));
     }
 
     // ---------- listar ----------
@@ -144,9 +180,9 @@ class ContaRepositorySqliteTest {
 
     @Test
     void listarTodasDevolveAsContasEmOrdemCrescenteDeNumero() {
-        repositorio.salvar(conta(30L, bruno, "3.00"));
-        repositorio.salvar(conta(10L, ana, "1.00"));
-        repositorio.salvar(conta(20L, ana, "2.00"));
+        repositorio.inserir(conta(30L, bruno, "3.00"));
+        repositorio.inserir(conta(10L, ana, "1.00"));
+        repositorio.inserir(conta(20L, ana, "2.00"));
 
         List<Long> numeros = repositorio.listarTodas().stream().map(Conta::getNumero).toList();
 
@@ -156,15 +192,15 @@ class ContaRepositorySqliteTest {
     // ---------- erros ----------
 
     @Test
-    void salvarRejeitaContaNula() {
-        assertThrows(IllegalArgumentException.class, () -> repositorio.salvar(null));
+    void inserirRejeitaContaNula() {
+        assertThrows(IllegalArgumentException.class, () -> repositorio.inserir(null));
     }
 
     @Test
     void falhaNaGravacaoDaContaDesfazAGravacaoDoTitular() throws Exception {
         executarSql("DROP TABLE contas");
 
-        assertThrows(PersistenciaException.class, () -> repositorio.salvar(conta(10L, ana, "100.00")));
+        assertThrows(PersistenciaException.class, () -> repositorio.inserir(conta(10L, ana, "100.00")));
 
         assertEquals(0, contar("clientes"), "O titular não pode ficar gravado sem a conta.");
     }
@@ -178,20 +214,75 @@ class ContaRepositorySqliteTest {
         assertThrows(PersistenciaException.class, () -> repositorio.listarTodas());
     }
 
+    // ---------- números e identificadores gerados pelo sistema ----------
+
+    @Test
+    void proximoNumeroContaComecaEmUmEmBancoVazio() {
+        assertEquals(1L, repositorio.proximoNumeroConta());
+        assertEquals(2L, repositorio.proximoNumeroConta());
+    }
+
+    @Test
+    void proximoNumeroContaContinuaDepoisDoMaiorNumeroGravado() {
+        repositorio.inserir(conta(10L, ana, "100.00"));
+
+        ContaRepositorySqlite novaInstancia = new ContaRepositorySqlite(fabrica);
+
+        assertEquals(11L, novaInstancia.proximoNumeroConta());
+    }
+
+    @Test
+    void inserirContaComNumeroManualFazOProximoNumeroSeguirAdiante() {
+        repositorio.inserir(conta(10L, ana, "100.00"));
+
+        assertEquals(11L, repositorio.proximoNumeroConta());
+    }
+
+    @Test
+    void proximoIdClienteSegueOMaiorIdGravadoNaMesmaEEmNovaInstancia() {
+        assertEquals(1L, repositorio.proximoIdCliente());
+        repositorio.inserir(conta(10L, new Cliente(7L, "Carla Dias", "111.222.333-44"), "1.00"));
+
+        assertEquals(8L, repositorio.proximoIdCliente());
+        assertEquals(8L, new ContaRepositorySqlite(fabrica).proximoIdCliente());
+    }
+
+    @Test
+    void numerosEIdsGeradosNaoRepetemEntreThreads() throws Exception {
+        ExecutorService pool = criarPool();
+        Set<Long> numeros = ConcurrentHashMap.newKeySet();
+        Set<Long> ids = ConcurrentHashMap.newKeySet();
+        try {
+            List<Future<?>> futuros = new ArrayList<>();
+            for (int t = 0; t < 8; t++) {
+                futuros.add(pool.submit(() -> {
+                    for (int i = 0; i < 50; i++) {
+                        numeros.add(repositorio.proximoNumeroConta());
+                        ids.add(repositorio.proximoIdCliente());
+                    }
+                }));
+            }
+            for (Future<?> futuro : futuros) {
+                futuro.get(30, TimeUnit.SECONDS);
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+
+        assertEquals(400, numeros.size(), "Houve números de conta repetidos.");
+        assertEquals(400, ids.size(), "Houve identificadores de cliente repetidos.");
+    }
+
     // ---------- concorrência ----------
 
     @Test
-    void salvamentosConcorrentesDeContasDiferentesSaoTodosPersistidos() throws Exception {
-        ExecutorService pool = Executors.newFixedThreadPool(8, tarefa -> {
-            Thread thread = new Thread(tarefa);
-            thread.setDaemon(true);
-            return thread;
-        });
+    void insercoesConcorrentesDeContasDiferentesSaoTodasPersistidas() throws Exception {
+        ExecutorService pool = criarPool();
         try {
             List<Future<?>> futuros = new ArrayList<>();
             for (long numero = 1; numero <= 40; numero++) {
                 Conta conta = conta(numero, numero % 2 == 0 ? ana : bruno, numero + ".00");
-                futuros.add(pool.submit(() -> repositorio.salvar(conta)));
+                futuros.add(pool.submit(() -> repositorio.inserir(conta)));
             }
             for (Future<?> futuro : futuros) {
                 futuro.get(30, TimeUnit.SECONDS);
