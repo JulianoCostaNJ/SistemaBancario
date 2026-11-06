@@ -1,1 +1,6 @@
 target/
+skills/
+saida/*.db
+saida/*.db-journal
+saida/*.db-wal
+saida/*.db-shm
