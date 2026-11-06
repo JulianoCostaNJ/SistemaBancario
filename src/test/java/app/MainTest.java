@@ -1,12 +1,5 @@
 package app;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-
-import domain.Conta;
-import domain.Transacao;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
@@ -14,12 +7,23 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.Statement;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+
+import domain.Conta;
+import domain.Transacao;
 import persistence.ContaRepositorySqlite;
 import persistence.FabricaConexao;
 import persistence.TransacaoRepositorySqlite;
@@ -80,7 +84,21 @@ class MainTest {
         assertTrue(conteudoExtrato.contains("Movimentos: 10"));
         assertTrue(conteudoExtrato.contains("Saldo atual: R$ 1.310,50"));
     }
+    @Test
+    void primeiraExecucaoCriaTambemAsTabelasDoBancoDigital() throws Exception {
+        Main.executar(pastaTemp, new PrintStream(new ByteArrayOutputStream(), true,
+                StandardCharsets.UTF_8), RELOGIO_FIXO);
 
+        FabricaConexao fabrica = FabricaConexao.paraArquivo(pastaTemp.resolve("poo-bank.db"));
+        try (Connection conexao = fabrica.criarConexao();
+            Statement comando = conexao.createStatement();
+            ResultSet resultado = comando.executeQuery(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' "
+                            + "AND name IN ('cartoes', 'faturas', 'chaves_pix', 'metas')")) {
+            resultado.next();
+            assertEquals(4, resultado.getInt(1));
+        }
+    }
     @Test
     void segundaExecucaoRecuperaContasSemDuplicarEAcumulaSaldos() throws IOException {
         ByteArrayOutputStream buffer1 = new ByteArrayOutputStream();
