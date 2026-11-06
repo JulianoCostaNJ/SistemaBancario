@@ -18,11 +18,19 @@ import java.util.stream.Collectors;
  * compartilhada entre threads. As configurações do SQLite que valem por conexão (chaves
  * estrangeiras e tempo de espera por banco ocupado) são aplicadas aqui, para que nenhuma conexão
  * seja usada sem elas.</p>
+ *
+ * <p>O esquema tem dois scripts: {@code schema.sql}, o núcleo exigido pela especificação (clientes,
+ * contas e transações), e {@code schema-banco-digital.sql}, a extensão do banco digital (acesso,
+ * categorias, Pix, cartões, faturas e metas), que só referencia o núcleo.</p>
  */
 public final class FabricaConexao {
 
     private static final int BUSY_TIMEOUT_MS = 5_000;
     private static final String RECURSO_SCHEMA = "/schema.sql";
+    private static final String RECURSO_SCHEMA_BANCO_DIGITAL = "/schema-banco-digital.sql";
+    private static final String RECURSO_DADOS_BANCO_DIGITAL = "/seed-banco-digital.sql";
+    private static final String ERRO_ESQUEMA = "Não foi possível criar o esquema do banco.";
+    private static final String ERRO_DADOS = "Não foi possível gravar os dados do banco digital.";
 
     private final String url;
 
@@ -79,18 +87,55 @@ public final class FabricaConexao {
     }
 
     /**
-     * Cria as tabelas e os índices definidos em {@code schema.sql}, se ainda não existirem. Pode
-     * ser executado mais de uma vez com segurança. O esquema é criado em uma única transação.
+     * Cria as tabelas e os índices do núcleo, definidos em {@code schema.sql}, se ainda não
+     * existirem. Pode ser executado mais de uma vez com segurança. O esquema é criado em uma única
+     * transação.
      *
      * @throws PersistenciaException se o esquema não puder ser lido ou aplicado
      */
     public void inicializarSchema() {
-        String[] comandos = lerComandosDoSchema();
+        aplicarScripts(ERRO_ESQUEMA, RECURSO_SCHEMA);
+    }
+
+    /**
+     * Cria o núcleo ({@code schema.sql}) e a extensão do banco digital
+     * ({@code schema-banco-digital.sql}), nessa ordem e em uma única transação. Se qualquer
+     * comando falhar, nada é criado. Pode ser executado mais de uma vez com segurança.
+     *
+     * @throws PersistenciaException se algum script não puder ser lido ou aplicado
+     */
+    public void inicializarSchemaCompleto() {
+        aplicarScripts(ERRO_ESQUEMA, RECURSO_SCHEMA, RECURSO_SCHEMA_BANCO_DIGITAL);
+    }
+
+    /**
+     * Grava os dados de demonstração do banco digital ({@code seed-banco-digital.sql}): categorias,
+     * identificação exibida das contas, credenciais, chaves Pix, cartões, faturas, lançamentos,
+     * detalhes das transações, pagamentos de fatura e metas.
+     *
+     * <p>As contas e as transações precisam existir antes: este método não grava saldo nem
+     * transações, apenas dados que apontam para elas. Tudo ocorre em uma única transação, então se
+     * faltar alguma conta nada é gravado. Pode ser executado mais de uma vez com segurança.</p>
+     *
+     * @throws PersistenciaException se o script não puder ser lido ou aplicado, inclusive quando as
+     *         contas de demonstração ainda não existirem
+     */
+    public void popularDadosBancoDigital() {
+        aplicarScripts(ERRO_DADOS, RECURSO_DADOS_BANCO_DIGITAL);
+    }
+
+    private void aplicarScripts(String mensagemDeErro, String... recursos) {
+        String[][] comandosPorScript = new String[recursos.length][];
+        for (int i = 0; i < recursos.length; i++) {
+            comandosPorScript[i] = lerComandosDoScript(recursos[i]);
+        }
         try (Connection conexao = criarConexao()) {
             conexao.setAutoCommit(false);
             try (Statement declaracao = conexao.createStatement()) {
-                for (String comando : comandos) {
-                    declaracao.execute(comando);
+                for (String[] comandos : comandosPorScript) {
+                    for (String comando : comandos) {
+                        declaracao.execute(comando);
+                    }
                 }
                 conexao.commit();
             } catch (SQLException e) {
@@ -102,7 +147,7 @@ public final class FabricaConexao {
                 throw e;
             }
         } catch (SQLException e) {
-            throw new PersistenciaException("Não foi possível criar o esquema do banco.", e);
+            throw new PersistenciaException(mensagemDeErro, e);
         }
     }
 
@@ -113,10 +158,11 @@ public final class FabricaConexao {
         }
     }
 
-    private static String[] lerComandosDoSchema() {
-        try (InputStream entrada = FabricaConexao.class.getResourceAsStream(RECURSO_SCHEMA)) {
+    private static String[] lerComandosDoScript(String recurso) {
+        try (InputStream entrada = FabricaConexao.class.getResourceAsStream(recurso)) {
             if (entrada == null) {
-                throw new PersistenciaException("O arquivo schema.sql não foi encontrado.");
+                throw new PersistenciaException(
+                        "O arquivo " + recurso.substring(1) + " não foi encontrado.");
             }
             String script = new String(entrada.readAllBytes(), StandardCharsets.UTF_8);
             String semComentarios = script.lines()
@@ -127,7 +173,8 @@ public final class FabricaConexao {
                     .filter(comando -> !comando.isEmpty())
                     .toArray(String[]::new);
         } catch (IOException e) {
-            throw new PersistenciaException("Não foi possível ler o arquivo schema.sql.", e);
+            throw new PersistenciaException(
+                    "Não foi possível ler o arquivo " + recurso.substring(1) + ".", e);
         }
     }
 }
