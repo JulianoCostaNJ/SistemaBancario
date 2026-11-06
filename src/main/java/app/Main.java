@@ -1,10 +1,5 @@
 package app;
 
-import domain.Cliente;
-import domain.Conta;
-import domain.SaldoInsuficienteException;
-import domain.TipoTransacao;
-import domain.Transacao;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.io.UncheckedIOException;
@@ -26,6 +21,12 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+
+import domain.Cliente;
+import domain.Conta;
+import domain.SaldoInsuficienteException;
+import domain.TipoTransacao;
+import domain.Transacao;
 import persistence.ContaRepository;
 import persistence.ContaRepositorySqlite;
 import persistence.FabricaConexao;
@@ -89,7 +90,7 @@ public final class Main {
 
         Path arquivoBanco = pastaSaida.resolve(NOME_BANCO);
         FabricaConexao fabrica = FabricaConexao.paraArquivo(arquivoBanco);
-        fabrica.inicializarSchema();
+        fabrica.inicializarSchemaCompleto();
 
         ContaRepository repositorioContas = new ContaRepositorySqlite(fabrica);
         TransacaoRepository repositorioTransacoes = new TransacaoRepositorySqlite(fabrica);
